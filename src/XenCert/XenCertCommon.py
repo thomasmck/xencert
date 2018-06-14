@@ -19,7 +19,7 @@ from optparse import OptionParser
 import StorageHandler
 from StorageHandlerUtil import Print
 
-storage_type = "storage type (lvmoiscsi, lvmohba, nfs, isl)"
+storage_type = "storage type (lvmoiscsi, lvmohba, nfs, isl, lvmofcoe)"
 
 # argument format:
 #  keyword
@@ -132,8 +132,8 @@ def store_configuration(g_storage_conf, options):
 
 def valid_arguments(options, g_storage_conf):
     """ validate arguments """
-    if not options.storage_type in ["lvmohba", "nfs", "cifs", "lvmoiscsi", "isl"]:
-        Print("Error: storage type (lvmohba, nfs, cifs, isl or lvmoiscsi) is required")
+    if not options.storage_type in ["lvmohba", "nfs", "cifs", "lvmoiscsi", "isl", "lvmofcoe"]:
+        Print("Error: storage type (lvmohba, nfs, cifs, isl, lvmofcoe or lvmoiscsi) is required")
         return 0
 
     for element in __commonparams__:
@@ -157,6 +157,8 @@ def valid_arguments(options, g_storage_conf):
         subargs = __isl_args__
     elif options.storage_type == "lvmoiscsi":
         subargs = __lvmoiscsi__
+    elif options.storage_type == "lvmofcoe":
+        subargs = __lvmohba_args__
 
     for element in subargs:
         if not getattr(options, element[0]):
@@ -188,6 +190,9 @@ def GetStorageHandler(g_storage_conf):
  
     if g_storage_conf["storage_type"] == "isl":
         return StorageHandler.StorageHandlerISL(g_storage_conf)
+
+    if g_storage_conf["storage_type"] == "lvmofcoe":
+        return StorageHandler.StorageHandlerFCOE(g_storage_conf)
 
     return None
 
