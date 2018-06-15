@@ -415,6 +415,75 @@ def GetHBAInformation(session, storage_conf):
     XenCertPrint("GetHBAInformation - returning adapter list: %s and scsi id list: %s." % (list, scsiIdList))  
     return (retVal, list, scsiIdList)
 
+
+def GetFCOEInformation(session, storage_conf):
+	try:
+		retVal = True
+		list = []
+		scsiIdList = []
+		device_config = {}
+		HBAFilter = {}
+
+		# Generate a map of the HBAs that the user want to test against.
+		if storage_conf['adapters'] != None:
+			for hba in storage_conf['adapters'].split(','):
+				HBAFilter[hba] = 1
+
+		try:
+			session.xenapi.SR.probe(util.get_localhost_uuid(session), device_config, 'lvmofcoe')
+		except Exception, e:
+			XenCertPrint("Got the probe data as: %s" % str(e))
+			# Now extract the HBA information from this data.
+			try:
+				# the target may not return any IQNs
+				# so prepare for it
+				xmlstr = extract_xml_from_exception(e)
+				xmlstr = xmlstr.lstrip()
+				xmlstr = xmlstr.lstrip('\'')
+				xmlstr = xmlstr.rstrip()
+				xmlstr = xmlstr.rstrip('\]')
+				xmlstr = xmlstr.rstrip('\'')
+				xmlstr = xmlstr.replace('\\n', '')
+				xmlstr = xmlstr.replace('\\t', '')
+				XenCertPrint("Got the probe xml as: %s" % xmlstr)
+				dom = xml.dom.minidom.parseString(xmlstr)
+				TgtList = dom.getElementsByTagName("Adapter")
+				for tgt in TgtList:
+					map = {}
+					for node in tgt.childNodes:
+						map[node.nodeName] = node.firstChild.nodeValue
+					if len(HBAFilter) != 0:
+						if HBAFilter.has_key(map['host']):
+							list.append(map)
+					else:
+						list.append(map)
+
+				bdList = dom.getElementsByTagName("BlockDevice")
+				for bd in bdList:
+					for node in bd.childNodes:
+						if node.nodeName == 'SCSIid':
+							SCSIid = node.firstChild.nodeValue
+						elif node.nodeName == 'adapter':
+							adapter = ''.join(["host", node.firstChild.nodeValue])
+
+					if len(HBAFilter) != 0:
+						if HBAFilter.has_key(adapter):
+							scsiIdList.append(SCSIid)
+					else:
+						scsiIdList.append(SCSIid)
+
+				XenCertPrint("The HBA information list being returned is: %s" % list)
+			except Exception, e:
+				XenCertPrint("Failed to parse lvmohba probe xml. Exception: %s" % str(e))
+
+	except Exception, e:
+		XenCertPrint("There was an exception in GetHBAInformation: %s." % str(e))
+		Print("Exception: %s" % str(e))
+		retVal = False
+
+	XenCertPrint("GetHBAInformation - returning adapter list: %s and scsi id list: %s." % (list, scsiIdList))
+	return (retVal, list, scsiIdList)
+
 # the following details from the file name, put it into a list and return the list. 
 def GetLunInformation(id):
     retVal = True

@@ -2399,7 +2399,385 @@ class StorageHandlerISCSI(StorageHandler):
     def __del__(self):
         XenCertPrint("Reached StorageHandlerISCSI destructor")
         StorageHandler.__del__(self)
-        
+
+
+class StorageHandlerFCOE(StorageHandler):
+    def __init__(self, storage_conf):
+        XenCertPrint("Reached StorageHandlerFCOE constructor")
+        StorageHandler.__init__(self, storage_conf)
+
+    def Create_SR(self):
+        return self.session.xenapi.SR.create(util.get_localhost_uuid(self.session), \
+                                             self.device_config, '0', 'XenCertTestSR', 'XenCertTestSR-desc', 'lvmofcoe',
+                                             '', False, {})
+
+    def Create(self):
+        device_config = {}
+        retVal = True
+        sr_ref = None
+        try:
+            XenCertPrint("First use XAPI to get information for creating an SR.")
+            listSCSIId = []
+            (retVal, listAdapters, listSCSIId) = StorageHandlerUtil. \
+                GetFCOEInformation(self.session, \
+                                  self.storage_conf)
+            if not retVal:
+                raise Exception("   - Failed to get available HBA information on the host.")
+            if len(listSCSIId) == 0:
+                raise Exception("   - Failed to get available LUNs on the host.")
+
+            # Create an SR
+            # try to create an SR with one of the LUNs mapped, if all fails throw an exception
+            Print("      Creating the SR.")
+            for scsiId in listSCSIId:
+                try:
+                    device_config['SCSIid'] = scsiId
+                    XenCertPrint(
+                        "The SR create parameters are %s, %s" % (util.get_localhost_uuid(self.session), device_config))
+                    sr_ref = self.session.xenapi.SR.create(util.get_localhost_uuid(self.session), device_config, '0',
+                                                           'XenCertTestSR', '', 'lvmofcoe', '', False, {})
+                    XenCertPrint("Created the SR %s using device_config %s" % (sr_ref, device_config))
+                    displayOperationStatus(True)
+                    break
+
+                except Exception, e:
+                    XenCertPrint("Could not perform SR control tests with device %s, trying other devices." % scsiId)
+                    continue
+
+            if sr_ref == None:
+                displayOperationStatus(False)
+                retVal = False
+        except Exception, e:
+            Print("   - Failed to create SR. Exception: %s" % str(e))
+            displayOperationStatus(False)
+            raise Exception(str(e))
+
+        return (retVal, sr_ref, device_config)
+
+    def GetPathStatus(self, device_config):
+        # Query DM-multipath status, reporting a) Path checker b) Path Priority handler c) Number of paths d) distribution of active vs passive paths
+        try:
+            (retVal, configMap) = StorageHandlerUtil.GetConfig(device_config['SCSIid'])
+            if not retVal:
+                raise Exception("   - Failed to get SCSI config information for SCSI Id: %s" % device_config['SCSIid'])
+
+            XenCertPrint("The config map extracted from scsi_id %s is %s" % (device_config['SCSIid'], configMap))
+
+            # Get path_checker and priority handler for this device.
+            (retVal, mpath_config) = StorageHandlerUtil.parse_config(configMap['ID_VENDOR'], configMap['ID_MODEL'])
+            if not retVal:
+                raise Exception("   - Failed to get multipathd config information for vendor: %s and product: %s" % (
+                configMap['ID_VENDOR'], configMap['ID_MODEL']))
+
+            XenCertPrint("The mpath config extracted from multipathd is %s" % mpath_config)
+
+            Print(">> Multipathd enabled for %s, %s with the following config:" % (
+            configMap['ID_VENDOR'], configMap['ID_MODEL']))
+            Print("     device {")
+            for key in mpath_config:
+                Print("             %s %s" % (key, mpath_config[key]))
+
+            Print("     }")
+
+            (retVal, self.listPathConfig) = StorageHandlerUtil.get_path_status(device_config['SCSIid'])
+            if not retVal:
+                raise Exception("Failed to get path status information for SCSI Id: %s" % device_config['SCSIid'])
+            XenCertPrint("The path status extracted from multipathd is %s" % self.listPathConfig)
+
+            return True
+        except Exception, e:
+            Print("   - Failed to get path status for device_config: %s. Exception: %s" % (device_config, str(e)))
+            return False
+
+    def DisplayPathStatus(self):
+        Print("       %-15s %-25s %-15s" % ('HBTL', 'Path DM status', 'Path status'))
+        for item in self.listPathConfig:
+            Print("       %-15s %-25s %-15s" % (item[0], item[1], item[2]))
+
+    def RandomlyFailPaths(self):
+        try:
+            self.blockedpathinfo = ''
+            self.noOfPaths = 0
+            self.noOfTotalPaths = 0
+            scriptReturn = self.BlockUnblockPaths(True, self.storage_conf['pathHandlerUtil'], self.noOfPaths,
+                                                  self.storage_conf['pathInfo'])
+            blockedAndfull = scriptReturn.split('::')[1]
+            self.noOfPaths = int(blockedAndfull.split(',')[0])
+            self.noOfTotalPaths = int(blockedAndfull.split(',')[1])
+            XenCertPrint("No of paths which should fail is %s out of total %s" % \
+                         (self.noOfPaths, self.noOfTotalPaths))
+            self.blockedpathinfo = scriptReturn.split('::')[0]
+            PrintOnSameLine(" -> Blocking paths (%s)\n" % self.blockedpathinfo)
+            return True
+        except Exception, e:
+            raise e
+
+    def MetaDataTests(self):
+        Print("MetaDataTests not applicable to HBA SR type.")
+        return False
+
+    def FunctionalTests(self):
+        retVal = True
+        checkPoint = 0
+        totalCheckPoints = 4
+        timeForIOTestsInSec = 0
+        totalTimeForIOTestsInSec = 0
+        totalSizeInMiB = 0
+
+        try:
+            # 1. Report the FC Host Adapters detected and the status of each physical port
+            # Run a probe on the host with type lvmohba, parse the xml output and extract the HBAs advertised
+            # TODO: CHANGE THIS
+            Print("DISCOVERING AVAILABLE HARDWARE HBAS")
+            (retVal, listMaps, scsilist) = StorageHandlerUtil. \
+                GetFCOEInformation(self.session, \
+                                  self.storage_conf)
+            if not retVal:
+                raise Exception("   - Failed to get available FCOE information on the host.")
+            else:
+                XenCertPrint("Got FCOE information: %s and SCSI ID list: %s" % (listMaps, scsilist))
+
+            if len(listMaps) == 0:
+                raise Exception("   - No software FCOE found!")
+
+            checkPoint += 1
+            first = True
+
+            for map in listMaps:
+                if first:
+                    for key in map.keys():
+                        PrintOnSameLine("%-15s\t" % key)
+                    PrintOnSameLine("\n")
+                    first = False
+
+                for key in map.keys():
+                    PrintOnSameLine("%-15s\t" % map[key])
+                PrintOnSameLine("\n")
+
+            displayOperationStatus(True)
+            checkPoint += 1
+
+            # 2. Report the number of LUNs and the disk geometry for verification by user
+            # take each host id and look into /dev/disk/by-scsibus/*-<host-id>*
+            # extract the SCSI ID from each such entries, make sure all have same
+            # number of entries and the SCSI IDs are the same.
+            # display SCSI IDs and luns for device for each host id.
+            Print("REPORT LUNS EXPOSED PER HOST")
+            Print(">> This test discovers the LUNs exposed by each host id including information")
+            Print("   like the HBTL, SCSI ID and the size of each LUN.")
+            Print("   The test also ensures that all host ids ")
+            Print("   expose the same number of LUNs and the same LUNs.")
+            Print("")
+            first = True
+            hostIdToLunList = {}
+            # map from SCSI id -> list of devices
+            scsiToTupleMap = {}
+            # Create a map of the format SCSIid -> [size, time]
+            # this is used to store size of the disk and the calculated time it takes to perform disk IO tests
+            scsiInfo = {}
+            for map in listMaps:
+                try:
+                    (rVal, listLunInfo) = StorageHandlerUtil.GetLunInformation(map['id'])
+                    if not rVal:
+                        raise Exception("Failed to get LUN information for host id: %s" % map['id'])
+                    else:
+                        # If one of the devices (and probably the only device) on this HBA
+                        # is the root dev, skip it. The number of devices exposed on this HBA
+                        # will not match the devices exposed on other adapters
+                        rootFound = False
+                        for lun in listLunInfo:
+                            if lun['device'] == os.path.realpath(util.getrootdev()):
+                                XenCertPrint("Skipping host id %s with root device %s " % (map['id'], lun['device']))
+                                rootFound = True
+                                break
+                        if rootFound == True:
+                            continue
+
+                        XenCertPrint("Got LUN information for host id %s as %s" % (map['id'], listLunInfo))
+                        hostIdToLunList[map['id']] = listLunInfo
+
+                    Print("     The luns discovered for host id %s: " % map['id'])
+                    mapDeviceToHBTL = scsiutil.cacheSCSIidentifiers()
+                    XenCertPrint("The mapDeviceToHBTL is %s" % mapDeviceToHBTL)
+
+                    if first or len(listLunInfo) > 0:
+                        Print("     %-4s\t%-34s\t%-20s\t%-10s" % ('LUN', 'SCSI-ID', 'Device', 'Size(MiB)'))
+                        first = False
+                        refListLuns = listLunInfo
+                    else:
+                        # Compare with ref list to make sure the same LUNs have been exposed.
+                        if len(listLunInfo) != len(refListLuns):
+                            raise Exception("     - Different number of LUNs exposed by different host ids.")
+
+                        # Now compare each element of the list to make sure it matches the ref list
+                        for lun in listLunInfo:
+                            found = False
+                            for refLun in refListLuns:
+                                if refLun['id'] == lun['id'] and refLun['SCSIid'] == lun['SCSIid']:
+                                    found = True
+                                    break
+                            if not found:
+                                raise Exception("     - Different number of LUNs exposed by different host ids.")
+                            else:
+                                continue
+                        checkPoint += 1
+
+                    for lun in listLunInfo:
+                        # Find the HBTL for this lun
+                        HBTL = mapDeviceToHBTL[lun['device']]
+                        HBTL_id = HBTL[1] + ":" + HBTL[2] + ":" + HBTL[3] + ":" + HBTL[4]
+                        filepath = '/sys/class/scsi_device/' + HBTL_id + '/device/block/*/size'
+
+                        # For clearwater version, the file path is device/block:*/size
+                        filelist = glob.glob(filepath)
+                        if not filelist:
+                            filepath = '/sys/class/scsi_device/' + HBTL_id + '/device/block:*/size'
+                            filelist = glob.glob(filepath)
+
+                        XenCertPrint("The filepath is: %s" % filepath)
+                        XenCertPrint("The HBTL_id is %s. The filelist is: %s" % (HBTL_id, filelist))
+                        sectors = util.get_single_entry(filelist[0])
+                        size = int(sectors) * 512 / 1024 / 1024
+                        Print("     %-4s\t%-34s\t%-20s\t%-10s" % (lun['id'], lun['SCSIid'], lun['device'], size))
+                        timeForIOTestsInSec = StorageHandlerUtil.FindDiskDataTestEstimate(lun['device'], size)
+                        if scsiToTupleMap.has_key(lun['SCSIid']):
+                            scsiToTupleMap[lun['SCSIid']].append(lun['device'])
+                            scsiInfo[lun['SCSIid']][0] += size
+                            scsiInfo[lun['SCSIid']][1] += timeForIOTestsInSec
+                        else:
+                            scsiToTupleMap[lun['SCSIid']] = [lun['device']]
+                            scsiInfo[lun['SCSIid']] = [size, timeForIOTestsInSec]
+
+
+                except Exception, e:
+                    Print("     EXCEPTION: No LUNs reported for host id %s." % map['id'])
+                    continue
+                displayOperationStatus(True)
+
+            checkPoint += 1
+
+            # 3. Execute a disk IO test against each LUN to verify that they are writeable and there is no apparent disk corruption
+            Print("DISK IO TESTS")
+            Print(">> This tests execute a disk IO test against each available LUN to verify ")
+            Print("   that they are writeable and there is no apparent disk corruption.")
+            Print("   the tests attempt to write to the LUN over each available path and")
+            Print("   reports the number of writable paths to each LUN.")
+
+            scsiIdList = self.storage_conf['scsiIDs'].split(",")
+            scsiIdsToTest = {}
+
+            # Create a pruned list which conatins only those SCSIids to be tested
+            for key, value in scsiToTupleMap.items():
+                if key in scsiIdList:
+                    scsiIdsToTest[key] = value
+                    totalSizeInMiB += scsiInfo[key][0]
+                    totalTimeForIOTestsInSec += scsiInfo[key][1]
+
+            # Check if the entered list contains invalid SCSIid entries
+            if len(scsiIdsToTest) != len(scsiIdList):
+                raise Exception("One or more SCSI-ID that was entered is invalid")
+
+            seconds = totalTimeForIOTestsInSec
+            minutes = 0
+            hrs = 0
+            XenCertPrint("Total estimated time for the disk IO tests in seconds: %d" % totalTimeForIOTestsInSec)
+            if totalTimeForIOTestsInSec > 60:
+                minutes = int(totalTimeForIOTestsInSec / 60)
+                seconds = int(totalTimeForIOTestsInSec - (minutes * 60))
+                if minutes > 60:
+                    hrs = int(minutes / 60)
+                    minutes = int(minutes - (hrs * 60))
+
+            if hrs > timeLimitFunctional or hrs == timeLimitFunctional and minutes > 0:
+                raise Exception(
+                    "The disk IO tests will take more than %s hours, please restrict the total disk sizes above to %d GiB."
+                    % (
+                    timeLimitFunctional, (timeLimitFunctional * 60 * 60 * totalSizeInMiB) / totalTimeForIOTestsInSec))
+
+            Print("   START TIME: %s " % (time.asctime(time.localtime())))
+            if hrs > 0:
+                Print("   APPROXIMATE RUN TIME: %s hours, %s minutes, %s seconds." % (hrs, minutes, seconds))
+            elif minutes > 0:
+                Print("   APPROXIMATE RUN TIME: %s minutes, %s seconds." % (minutes, seconds))
+            elif seconds > 0:
+                Print("   APPROXIMATE RUN TIME: %s seconds." % seconds)
+
+            Print("")
+            totalCheckPoints += 1
+            for key in scsiIdsToTest.keys():
+                try:
+                    totalCheckPoints += 1
+                    Print("     - Testing LUN with SCSI ID %-30s" % key)
+
+                    pathNo = 0
+                    pathPassed = 0
+                    for device in scsiIdsToTest[key]:
+                        # If this is a root device then skip IO tests for this device.
+                        if os.path.realpath(util.getrootdev()) == device:
+                            Print("     -> Skipping IO tests on device %s, as it is the root device." % device)
+                            continue
+
+                        pathNo += 1
+
+                        # Execute a disk IO test against each path to the LUN to verify that it is writeable
+                        # and there is no apparent disk corruption
+                        PrintOnSameLine("        Path num: %d. Device: %s" % (pathNo, device))
+                        try:
+                            # First write a small chunk on the device to make sure it works
+                            XenCertPrint("First write a small chunk on the device %s to make sure it works." % device)
+                            cmd = ['dd', 'if=/dev/zero', 'of=%s' % device, 'bs=1M', 'count=1', 'conv=nocreat',
+                                   'oflag=direct']
+                            util.pread(cmd)
+
+                            cmd = [DISKDATATEST, 'write', '1', device]
+                            XenCertPrint("The command to be fired is: %s" % cmd)
+                            util.pread(cmd)
+
+                            cmd = [DISKDATATEST, 'verify', '1', device]
+                            XenCertPrint("The command to be fired is: %s" % cmd)
+                            util.pread(cmd)
+
+                            XenCertPrint("Device %s passed the disk IO test. " % device)
+                            pathPassed += 1
+                            Print("")
+                            displayOperationStatus(True)
+
+                        except Exception, e:
+                            Print("        Exception: %s" % str(e))
+                            displayOperationStatus(False)
+                            XenCertPrint(
+                                "Device %s failed the disk IO test. Please check if the disk is writable." % device)
+                    if pathPassed == 0:
+                        displayOperationStatus(False)
+                        raise Exception(
+                            "     - LUN with SCSI ID %-30s. Failed the IO test, none of the paths were writable." % key)
+                    else:
+                        Print("        SCSI ID: %s Total paths: %d. Writable paths: %d." % (
+                        key, len(scsiIdsToTest[key]), pathPassed))
+                        displayOperationStatus(True)
+                        checkPoint += 1
+
+                except Exception, e:
+                    raise Exception("   - Testing failed while testing devices with SCSI ID: %s." % key)
+
+            Print("   END TIME: %s " % (time.asctime(time.localtime())))
+            checkPoint += 1
+
+        except Exception, e:
+            Print("- Functional testing failed due to an exception.")
+            Print("- Exception: %s" % str(e))
+            retVal = False
+
+        XenCertPrint("Checkpoints: %d, totalCheckPoints: %s" % (checkPoint, totalCheckPoints))
+        XenCertPrint("Leaving StorageHandlerFCOE FunctionalTests")
+
+        return (retVal, checkPoint, totalCheckPoints)
+
+    def __del__(self):
+        XenCertPrint("Reached StorageHandlerFCOE destructor")
+        StorageHandler.__del__(self)
+
+
 class StorageHandlerHBA(StorageHandler):
     def __init__(self, storage_conf):
         XenCertPrint("Reached StorageHandlerHBA constructor")
