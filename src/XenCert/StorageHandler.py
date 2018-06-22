@@ -213,7 +213,7 @@ class StorageHandler(object):
             # Execute trim on the SR before destroying based on type
             if sr_ref != None:
                 sr_type = self.session.xenapi.SR.get_type(sr_ref)
-                if sr_type in ['lvmoiscsi', 'lvmohba']:
+                if sr_type in ['lvmoiscsi', 'lvmohba', 'lvmofcoe']:
                     Print("SR SPACE RECLAMATION TEST")
                     # Perform TRIM before destroying SR
                     totalCheckPoints += 1
@@ -2460,6 +2460,7 @@ class StorageHandlerHBA(BlockStorageHandler):
     def __init__(self, storage_conf):
         XenCertPrint("Reached StorageHandlerHBA constructor")
         super(StorageHandlerHBA, self).__init__(storage_conf)
+        self.sr_type = "lvmo" + self.storage_conf['storage_type']
 
     def Create(self):
         device_config = {}
@@ -2470,7 +2471,7 @@ class StorageHandlerHBA(BlockStorageHandler):
             listSCSIId = []
             (retVal, listAdapters, listSCSIId) = StorageHandlerUtil. \
                                                GetHBAInformation(self.session, \
-                                               self.storage_conf)
+                                               self.storage_conf, sr_type=self.sr_type)
             if not retVal:                
                 raise Exception("   - Failed to get available HBA information on the host.")
             if len(listSCSIId) == 0:                
@@ -2483,7 +2484,7 @@ class StorageHandlerHBA(BlockStorageHandler):
                 try:
                     device_config['SCSIid'] = scsiId
                     XenCertPrint("The SR create parameters are %s, %s" % (util.get_localhost_uuid(self.session), device_config))
-                    sr_ref = self.session.xenapi.SR.create(util.get_localhost_uuid(self.session), device_config, '0', 'XenCertTestSR', '', 'lvmohba', '',False, {})
+                    sr_ref = self.session.xenapi.SR.create(util.get_localhost_uuid(self.session), device_config, '0', 'XenCertTestSR', '', self.sr_type, '',False, {})
                     XenCertPrint("Created the SR %s using device_config %s" % (sr_ref, device_config))
                     displayOperationStatus(True)
                     break
@@ -2575,7 +2576,7 @@ class StorageHandlerHBA(BlockStorageHandler):
             Print("DISCOVERING AVAILABLE HARDWARE HBAS")
             (retVal, listMaps, scsilist) = StorageHandlerUtil. \
                                            GetHBAInformation(self.session, \
-                                           self.storage_conf)
+                                           self.storage_conf, sr_type=self.sr_type)
             if not retVal:                
                 raise Exception("   - Failed to get available HBA information on the host.")
             else:

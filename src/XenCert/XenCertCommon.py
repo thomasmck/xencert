@@ -19,7 +19,7 @@ from optparse import OptionParser
 import StorageHandler
 from StorageHandlerUtil import Print
 
-storage_type = "storage type (iscsi, hba, nfs, isl)"
+storage_type = "storage type (iscsi, hba, nfs, isl, fcoe)"
 
 # argument format:
 #  keyword
@@ -133,8 +133,8 @@ def store_configuration(g_storage_conf, options):
 
 def valid_arguments(options, g_storage_conf):
     """ validate arguments """
-    if not options.storage_type in ["hba", "nfs", "cifs", "iscsi", "isl"]:
-        Print("Error: storage type (hba, nfs, cifs, isl or iscsi) is required")
+    if not options.storage_type in ["hba", "nfs", "cifs", "iscsi", "isl", "fcoe"]:
+        Print("Error: storage type (hba, nfs, cifs, isl, fcoe or iscsi) is required")
         return 0
 
     for element in __commonparams__:
@@ -152,7 +152,7 @@ def valid_arguments(options, g_storage_conf):
         subargs = __nfs_args__
     elif options.storage_type == "cifs":
         subargs = __cifs_args__
-    elif options.storage_type == "hba":
+    elif options.storage_type in ["hba", "fcoe"]:
         subargs = __hba_args__
     elif options.storage_type == "isl":
         subargs = __isl_args__
@@ -178,7 +178,7 @@ def GetStorageHandler(g_storage_conf):
     if g_storage_conf["storage_type"] == "iscsi":
         return StorageHandler.StorageHandlerISCSI(g_storage_conf)
     
-    if g_storage_conf["storage_type"] == "hba":
+    if g_storage_conf["storage_type"] in ["hba", "fcoe"]:
         return StorageHandler.StorageHandlerHBA(g_storage_conf)
         
     if g_storage_conf["storage_type"] == "nfs":
@@ -237,7 +237,7 @@ def DisplayStorageSpecificUsage(storage_type):
         DisplayNfsOptions()
     elif storage_type == 'cifs':
         DisplayCIFSOptions()
-    elif storage_type == 'hba':
+    elif storage_type in ['hba', 'fcoe']:
         DisplayHBAOptions()
     elif storage_type == 'isl':
         DisplayiSLOptions()
